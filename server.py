@@ -533,4 +533,4 @@ def get_budget_status_of_category(
 if __name__ == "__main__":
     logger.info("Starting Expense Tracker MCP server (stdio transport)…")
     logger.info("Database: %s", DB_PATH.resolve())
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    mcp.run(transport="http", host="0.0.0.0", port=8000, stateless_http=True)
