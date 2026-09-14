@@ -57,6 +57,17 @@ mcp = FastMCP(
     ),
 )
 
+# --- Workaround for a known MCP SDK bug (fastmcp/mcp, Sept 2026) ---
+# Recent SDK versions advertise a "subscriptions/listen" capability whose
+# handler never completes, which causes clients like Claude Desktop to hang
+# on connect and then fail every subsequent call with a stale/"session not
+# found" error. Removing the handler stops the server from advertising the
+# broken capability. Tracking: modelcontextprotocol/python-sdk#3493
+try:
+    mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
+except Exception:
+    logger.debug("subscriptions/listen handler not present; skipping workaround")
+
 # ---------------------------------------------------------------------------
 # Database setup
 # ---------------------------------------------------------------------------
