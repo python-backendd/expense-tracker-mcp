@@ -63,10 +63,10 @@ mcp = FastMCP(
 # on connect and then fail every subsequent call with a stale/"session not
 # found" error. Removing the handler stops the server from advertising the
 # broken capability. Tracking: modelcontextprotocol/python-sdk#3493
-try:
-    mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
-except Exception:
-    logger.debug("subscriptions/listen handler not present; skipping workaround")
+# try:
+#     mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
+# except Exception:
+#     logger.debug("subscriptions/listen handler not present; skipping workaround")
 
 # ---------------------------------------------------------------------------
 # Database setup
@@ -533,4 +533,4 @@ def get_budget_status_of_category(
 if __name__ == "__main__":
     logger.info("Starting Expense Tracker MCP server (stdio transport)…")
     logger.info("Database: %s", DB_PATH.resolve())
-    mcp.run()
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
