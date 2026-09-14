@@ -63,10 +63,10 @@ mcp = FastMCP(
 # on connect and then fail every subsequent call with a stale/"session not
 # found" error. Removing the handler stops the server from advertising the
 # broken capability. Tracking: modelcontextprotocol/python-sdk#3493
-# try:
-#     mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
-# except Exception:
-#     logger.debug("subscriptions/listen handler not present; skipping workaround")
+try:
+    mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
+except Exception:
+    logger.debug("subscriptions/listen handler not present; skipping workaround")
 
 # ---------------------------------------------------------------------------
 # Database setup
