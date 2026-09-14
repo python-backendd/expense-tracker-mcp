@@ -18,6 +18,7 @@ Reference: https://gofastmcp.com/getting-started/installation
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -28,7 +29,13 @@ from fastmcp import FastMCP
 # Configuration
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(__file__).parent / "expenses.db"
+# Many hosting platforms deploy the app code to a read-only directory and
+# only give write access to a specific scratch/data path. Allow overriding
+# where the DB lives via an env var, and default to a writable temp dir
+# rather than assuming the app directory itself is writable.
+DB_DIR = Path(os.environ.get("DB_DIR", "/tmp/expense-tracker"))
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DB_DIR / "expenses.db"
 
 # Logging goes to stderr so it doesn't corrupt the stdio JSON-RPC stream
 logging.basicConfig(
