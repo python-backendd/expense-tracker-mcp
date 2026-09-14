@@ -102,9 +102,8 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "expense-tracker": {
-      "command": "python",
-      "args": ["-m", "expense_tracker.server"],
-      "cwd": "/path/to/mcp_demo"
+      "command": "/Users/krishnasinghal/Projects/mcp_demo/.venv/bin/fastmcp",
+      "args": ["run", "/Users/krishnasinghal/Projects/mcp_demo/expense_tracker/server.py:mcp"],
     }
   }
 }
