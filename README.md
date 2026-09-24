@@ -1,12 +1,28 @@
 # Expense Tracker MCP Server
 
-A minimal expense tracking server built with [FastMCP](https://gofastmcp.com) and SQLite.
+A minimal expense tracking server built with [FastMCP](https://gofastmcp.com) and [Turso](https://turso.tech) (a SQLite-compatible cloud database).
 
 ## Setup
 
 ```bash
 # Install dependencies (from the mcp_demo root)
-pip install fastmcp
+pip install fastmcp turso_serverless python-dotenv
+```
+
+### Environment variables
+
+Create a `.env` file in `expense_tracker/` with your Turso database credentials:
+
+```bash
+DB_URL=libsql://your-db-name-yourusername.turso.io
+DB_AUTH_TOKEN=your-auth-token-here
+```
+
+Get these from the Turso CLI:
+
+```bash
+turso db show your-db-name --url
+turso db tokens create your-db-name
 ```
 
 ## Running the Server
@@ -79,7 +95,7 @@ Get total spending for a specific category.
 
 ## Database
 
-The SQLite database (`expenses.db`) is created automatically in the `expense_tracker/` directory on first run.
+Expenses are stored in a [Turso](https://turso.tech) cloud database (SQLite-compatible), connected via the `turso_serverless` DB-API 2.0 driver over HTTP. The connection is configured through the `DB_URL` and `DB_AUTH_TOKEN` environment variables — see [Setup](#setup) above. The `expenses` table and its indexes are created automatically on first run if they don't already exist.
 
 ### Schema
 
@@ -104,6 +120,10 @@ Add to your `claude_desktop_config.json`:
     "expense-tracker": {
       "command": "/Users/krishnasinghal/Projects/mcp_demo/.venv/bin/fastmcp",
       "args": ["run", "/Users/krishnasinghal/Projects/mcp_demo/expense_tracker/server.py:mcp"],
+      "env": {
+        "DB_URL": "libsql://your-db-name-yourusername.turso.io",
+        "DB_AUTH_TOKEN": "your-auth-token-here"
+      }
     }
   }
 }
