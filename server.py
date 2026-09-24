@@ -20,7 +20,7 @@ from datetime import date, datetime
 
 from fastmcp import FastMCP
 
-from db import client
+from db import get_client
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -143,7 +143,7 @@ def add_expense(
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    cursor = client.execute(
+    cursor = get_client().execute(
         """
         INSERT INTO expenses (amount, description, category, date)
         VALUES (?, ?, ?, ?)
@@ -187,10 +187,10 @@ def list_expenses(limit: int = 20, offset: int = 0) -> str:
     offset = max(0, offset)
 
     # Total count
-    total = client.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+    total = get_client().execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
 
     # Paginated results
-    cursor = client.execute(
+    cursor = get_client().execute(
         """
         SELECT id, amount, description, category, date, created_at
         FROM expenses
@@ -253,7 +253,7 @@ def search_expenses(keyword: str | None = None, category: str | None = None) -> 
 
     where_clause = " AND ".join(conditions)
 
-    cursor = client.execute(
+    cursor = get_client().execute(
         f"""
         SELECT id, amount, description, category, date, created_at
         FROM expenses
@@ -310,7 +310,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
     # Overall totals
-    summary_cursor = client.execute(
+    summary_cursor = get_client().execute(
         """
         SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
         FROM expenses
@@ -326,7 +326,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
     total_amount = summary["total"]
 
     # Category breakdown
-    category_cursor = client.execute(
+    category_cursor = get_client().execute(
         """
         SELECT category,
                COUNT(*) as count,
@@ -409,7 +409,7 @@ def get_budget_status_of_category(
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    stats_cursor = client.execute(
+    stats_cursor = get_client().execute(
         """
         SELECT COUNT(*) as count,
                COALESCE(SUM(amount), 0) as total,
@@ -428,7 +428,7 @@ def get_budget_status_of_category(
     month_name = datetime(year, month, 1).strftime("%B %Y")
 
     # Recent transactions in this category
-    recent_cursor = client.execute(
+    recent_cursor = get_client().execute(
         """
         SELECT id, amount, description, date
         FROM expenses

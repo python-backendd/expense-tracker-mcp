@@ -4,12 +4,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client =turso_serverless.connect(
-    os.getenv("DB_URL"),
-    auth_token=os.getenv("DB_AUTH_TOKEN"),
-)
+
+def get_client():
+    db_url = os.getenv("DB_URL")
+    db_auth_token = os.getenv("DB_AUTH_TOKEN")
+
+    if not db_url:
+        raise RuntimeError("DB_URL environment variable is not configured")
+
+    if not db_auth_token:
+        raise RuntimeError("DB_AUTH_TOKEN environment variable is not configured")
+
+    return turso_serverless.connect(
+        db_url,
+        auth_token=db_auth_token,
+    )
 
 def _init_db() -> None:
+    client = get_client()
     client.execute("""
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
