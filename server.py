@@ -130,6 +130,7 @@ def add_expense(
     Returns:
         A confirmation message with the new expense details.
     """
+    client = get_client()
     if amount <= 0:
         return json.dumps({"error": "Amount must be greater than 0"})
 
@@ -143,13 +144,14 @@ def add_expense(
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    cursor = get_client().execute(
+    cursor = client.execute(
         """
         INSERT INTO expenses (amount, description, category, date)
         VALUES (?, ?, ?, ?)
         """,
         (amount, description.strip(), normalized_category, validated_date),
     )
+    client.commit()
     expense_id = cursor.lastrowid
     logger.info(
         "Added expense #%s: %s %s (%s) on %s",
@@ -159,6 +161,8 @@ def add_expense(
         normalized_category,
         validated_date,
     )
+    check = get_client().execute("SELECT * FROM expenses WHERE id = ?",(expense_id,),)
+    logger.info("Inserted expense: %s", check.fetchall())
     return json.dumps(
         {
             "status": "created",
@@ -185,12 +189,13 @@ def list_expenses(limit: int = 20, offset: int = 0) -> str:
     """
     limit = min(max(1, limit), 100)
     offset = max(0, offset)
+    client = get_client()
 
     # Total count
-    total = get_client().execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+    total = client.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
 
     # Paginated results
-    cursor = get_client().execute(
+    cursor = client.execute(
         """
         SELECT id, amount, description, category, date, created_at
         FROM expenses
@@ -297,6 +302,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
     today = date.today()
     month = month or today.month
     year = year or today.year
+    client = get_client()
 
     if not (1 <= month <= 12):
         return json.dumps({"error": "Month must be between 1 and 12"})
@@ -310,7 +316,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
     # Overall totals
-    summary_cursor = get_client().execute(
+    summary_cursor = client.execute(
         """
         SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
         FROM expenses
@@ -326,7 +332,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
     total_amount = summary["total"]
 
     # Category breakdown
-    category_cursor = get_client().execute(
+    category_cursor = client.execute(
         """
         SELECT category,
                COUNT(*) as count,
@@ -399,7 +405,7 @@ def get_budget_status_of_category(
     today = date.today()
     month = month or today.month
     year = year or today.year
-
+    client = get_client()
     if not (1 <= month <= 12):
         return json.dumps({"error": "Month must be between 1 and 12"})
 
@@ -409,7 +415,7 @@ def get_budget_status_of_category(
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    stats_cursor = get_client().execute(
+    stats_cursor = client.execute(
         """
         SELECT COUNT(*) as count,
                COALESCE(SUM(amount), 0) as total,
@@ -428,7 +434,7 @@ def get_budget_status_of_category(
     month_name = datetime(year, month, 1).strftime("%B %Y")
 
     # Recent transactions in this category
-    recent_cursor = get_client().execute(
+    recent_cursor = client.execute(
         """
         SELECT id, amount, description, date
         FROM expenses
