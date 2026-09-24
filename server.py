@@ -1,7 +1,8 @@
 """
 Expense Tracker MCP Server
 ============================
-A FastMCP server that manages personal expenses using SQLite storage.
+A FastMCP server that manages personal expenses using a Turso (SQLite-
+compatible) cloud database via the `turso_serverless` DB-API 2.0 driver.
 
 Tools:
   - add_expense         — Record a new expense
@@ -10,12 +11,11 @@ Tools:
   - get_expense_summary_month  — Monthly spending summary with category breakdown
   - get_budget_status_of_category — Total spending for a specific category
 
-Transport: stdio (default for Claude Desktop integration)
+Transport: streamable-http
 Reference: https://gofastmcp.com/getting-started/installation
 """
 import json
 import logging
-import sqlite3
 from datetime import date, datetime
 
 from fastmcp import FastMCP
@@ -23,14 +23,8 @@ from fastmcp import FastMCP
 from db import client
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Logging
 # ---------------------------------------------------------------------------
-
-# Many hosting platforms deploy the app code to a read-only directory and
-# only give write access to a specific scratch/data path. Allow overriding
-# where the DB lives via an env var, and default to a writable temp dir
-# rather than assuming the app directory itself is writable.
-
 
 # Logging goes to stderr so it doesn't corrupt the stdio JSON-RPC stream
 logging.basicConfig(
@@ -47,8 +41,8 @@ mcp = FastMCP(
     "Expense Tracker",
     instructions=(
         "An expense tracking server. Use the tools to add, list, search, "
-        "and summarize expenses. Expenses are stored in a local SQLite database. "
-        "All amounts are in INR (₹)."
+        "and summarize expenses. Expenses are stored in a Turso (cloud SQLite) "
+        "database. All amounts are in INR (₹)."
     ),
 )
 
@@ -64,13 +58,6 @@ mcp = FastMCP(
 # change notification, leaving the handler in place costs nothing on a normal
 # long-running host (e.g. FastMCP Cloud) and restores compatibility with
 # Antigravity and other modern-protocol clients.
-
-# ---------------------------------------------------------------------------
-# Database setup
-# ---------------------------------------------------------------------------
-
-
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -104,9 +91,19 @@ def _validate_date(date_str: str | None) -> str:
         )
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a sqlite3.Row to a plain dict."""
-    return dict(row)
+def _row_to_dict(row, columns: list[str]) -> dict:
+    """Convert a plain DB-API row tuple to a dict using cursor column names.
+
+    turso_serverless is a DB-API 2.0 driver: fetchall()/fetchone() return
+    plain tuples, not mapping-like objects (unlike sqlite3.Row), so we zip
+    against cursor.description to rebuild column names.
+    """
+    return dict(zip(columns, row))
+
+
+def _columns_from_cursor(cursor) -> list[str]:
+    """Extract column names from a cursor's DB-API description."""
+    return [col[0] for col in cursor.description]
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +130,6 @@ def add_expense(
     Returns:
         A confirmation message with the new expense details.
     """
-    # Validate amount
     if amount <= 0:
         return json.dumps({"error": "Amount must be greater than 0"})
 
@@ -147,38 +143,33 @@ def add_expense(
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    conn = client
-    try:
-        cursor = conn.execute(
-            """
-            INSERT INTO expenses (amount, description, category, date)
-            VALUES (?, ?, ?, ?)
-            """,
-            (amount, description.strip(), normalized_category, validated_date),
-        )
-        conn.commit()
-        expense_id = cursor.lastrowid
-        logger.info(
-            "Added expense #%d: %s %s (%s) on %s",
-            expense_id,
-            _format_inr(amount),
-            description,
-            normalized_category,
-            validated_date,
-        )
-        return json.dumps(
-            {
-                "status": "created",
-                "id": expense_id,
-                "amount": _format_inr(amount),
-                "description": description.strip(),
-                "category": normalized_category,
-                "date": validated_date,
-            },
-            indent=2,
-        )
-    finally:
-        conn.close()
+    cursor = client.execute(
+        """
+        INSERT INTO expenses (amount, description, category, date)
+        VALUES (?, ?, ?, ?)
+        """,
+        (amount, description.strip(), normalized_category, validated_date),
+    )
+    expense_id = cursor.lastrowid
+    logger.info(
+        "Added expense #%s: %s %s (%s) on %s",
+        expense_id,
+        _format_inr(amount),
+        description,
+        normalized_category,
+        validated_date,
+    )
+    return json.dumps(
+        {
+            "status": "created",
+            "id": expense_id,
+            "amount": _format_inr(amount),
+            "description": description.strip(),
+            "category": normalized_category,
+            "date": validated_date,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool
@@ -195,40 +186,38 @@ def list_expenses(limit: int = 20, offset: int = 0) -> str:
     limit = min(max(1, limit), 100)
     offset = max(0, offset)
 
-    conn = client
-    try:
-        # Get total count
-        total = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+    # Total count
+    total = client.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
 
-        # Get paginated results
-        rows = conn.execute(
-            """
-            SELECT id, amount, description, category, date, created_at
-            FROM expenses
-            ORDER BY date DESC, id DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
-        ).fetchall()
+    # Paginated results
+    cursor = client.execute(
+        """
+        SELECT id, amount, description, category, date, created_at
+        FROM expenses
+        ORDER BY date DESC, id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    )
+    rows = cursor.fetchall()
+    columns = _columns_from_cursor(cursor)
 
-        expenses = []
-        for row in rows:
-            expense = _row_to_dict(row)
-            expense["amount_formatted"] = _format_inr(expense["amount"])
-            expenses.append(expense)
+    expenses = []
+    for row in rows:
+        expense = _row_to_dict(row, columns)
+        expense["amount_formatted"] = _format_inr(expense["amount"])
+        expenses.append(expense)
 
-        return json.dumps(
-            {
-                "expenses": expenses,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "has_more": (offset + limit) < total,
-            },
-            indent=2,
-        )
-    finally:
-        conn.close()
+    return json.dumps(
+        {
+            "expenses": expenses,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < total,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool
@@ -264,35 +253,33 @@ def search_expenses(keyword: str | None = None, category: str | None = None) -> 
 
     where_clause = " AND ".join(conditions)
 
-    conn = client
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT id, amount, description, category, date, created_at
-            FROM expenses
-            WHERE {where_clause}
-            ORDER BY date DESC, id DESC
-            """,
-            params,
-        ).fetchall()
+    cursor = client.execute(
+        f"""
+        SELECT id, amount, description, category, date, created_at
+        FROM expenses
+        WHERE {where_clause}
+        ORDER BY date DESC, id DESC
+        """,
+        params,
+    )
+    rows = cursor.fetchall()
+    columns = _columns_from_cursor(cursor)
 
-        expenses = []
-        for row in rows:
-            expense = _row_to_dict(row)
-            expense["amount_formatted"] = _format_inr(expense["amount"])
-            expenses.append(expense)
+    expenses = []
+    for row in rows:
+        expense = _row_to_dict(row, columns)
+        expense["amount_formatted"] = _format_inr(expense["amount"])
+        expenses.append(expense)
 
-        return json.dumps(
-            {
-                "keyword": keyword,
-                "category": category,
-                "matches": expenses,
-                "count": len(expenses),
-            },
-            indent=2,
-        )
-    finally:
-        conn.close()
+    return json.dumps(
+        {
+            "keyword": keyword,
+            "category": category,
+            "matches": expenses,
+            "count": len(expenses),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool
@@ -316,74 +303,75 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
     if year < 2000 or year > 2100:
         return json.dumps({"error": "Year must be between 2000 and 2100"})
 
-    # Build date range for the month
     date_start = f"{year:04d}-{month:02d}-01"
     if month == 12:
         date_end = f"{year + 1:04d}-01-01"
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    conn = client
-    try:
-        # Overall totals
-        summary_row = conn.execute(
-            """
-            SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
-            FROM expenses
-            WHERE date >= ? AND date < ?
-            """,
-            (date_start, date_end),
-        ).fetchone()
+    # Overall totals
+    summary_cursor = client.execute(
+        """
+        SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+        FROM expenses
+        WHERE date >= ? AND date < ?
+        """,
+        (date_start, date_end),
+    )
+    summary_row = summary_cursor.fetchone()
+    summary_columns = _columns_from_cursor(summary_cursor)
+    summary = _row_to_dict(summary_row, summary_columns)
 
-        total_count = summary_row["count"]
-        total_amount = summary_row["total"]
+    total_count = summary["count"]
+    total_amount = summary["total"]
 
-        # Category breakdown
-        category_rows = conn.execute(
-            """
-            SELECT category,
-                   COUNT(*) as count,
-                   SUM(amount) as total
-            FROM expenses
-            WHERE date >= ? AND date < ?
-            GROUP BY category
-            ORDER BY total DESC
-            """,
-            (date_start, date_end),
-        ).fetchall()
+    # Category breakdown
+    category_cursor = client.execute(
+        """
+        SELECT category,
+               COUNT(*) as count,
+               SUM(amount) as total
+        FROM expenses
+        WHERE date >= ? AND date < ?
+        GROUP BY category
+        ORDER BY total DESC
+        """,
+        (date_start, date_end),
+    )
+    category_rows = category_cursor.fetchall()
+    category_columns = _columns_from_cursor(category_cursor)
 
-        categories = []
-        for row in category_rows:
-            categories.append(
-                {
-                    "category": row["category"],
-                    "count": row["count"],
-                    "total": row["total"],
-                    "total_formatted": _format_inr(row["total"]),
-                    "percentage": round(
-                        (row["total"] / total_amount * 100) if total_amount > 0 else 0,
-                        1,
-                    ),
-                }
-            )
-
-        month_name = datetime(year, month, 1).strftime("%B %Y")
-
-        return json.dumps(
+    categories = []
+    for row in category_rows:
+        cat = _row_to_dict(row, category_columns)
+        categories.append(
             {
-                "month": month_name,
-                "total_expenses": total_count,
-                "total_amount": total_amount,
-                "total_formatted": _format_inr(total_amount),
-                "average_per_expense": _format_inr(
-                    total_amount / total_count if total_count > 0 else 0
+                "category": cat["category"],
+                "count": cat["count"],
+                "total": cat["total"],
+                "total_formatted": _format_inr(cat["total"]),
+                "percentage": round(
+                    (cat["total"] / total_amount * 100) if total_amount > 0 else 0,
+                    1,
                 ),
-                "category_breakdown": categories,
-            },
-            indent=2,
+            }
         )
-    finally:
-        conn.close()
+
+    month_name = datetime(year, month, 1).strftime("%B %Y")
+
+    return json.dumps(
+        {
+            "month": month_name,
+            "total_expenses": total_count,
+            "total_amount": total_amount,
+            "total_formatted": _format_inr(total_amount),
+            "average_per_expense": _format_inr(
+                total_amount / total_count if total_count > 0 else 0
+            ),
+            "category_breakdown": categories,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool
@@ -415,73 +403,74 @@ def get_budget_status_of_category(
     if not (1 <= month <= 12):
         return json.dumps({"error": "Month must be between 1 and 12"})
 
-    # Build date range
     date_start = f"{year:04d}-{month:02d}-01"
     if month == 12:
         date_end = f"{year + 1:04d}-01-01"
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    conn = client
-    try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) as count,
-                   COALESCE(SUM(amount), 0) as total,
-                   COALESCE(AVG(amount), 0) as average,
-                   MIN(amount) as min_expense,
-                   MAX(amount) as max_expense
-            FROM expenses
-            WHERE category = ? AND date >= ? AND date < ?
-            """,
-            (normalized, date_start, date_end),
-        ).fetchone()
+    stats_cursor = client.execute(
+        """
+        SELECT COUNT(*) as count,
+               COALESCE(SUM(amount), 0) as total,
+               COALESCE(AVG(amount), 0) as average,
+               MIN(amount) as min_expense,
+               MAX(amount) as max_expense
+        FROM expenses
+        WHERE category = ? AND date >= ? AND date < ?
+        """,
+        (normalized, date_start, date_end),
+    )
+    stats_row = stats_cursor.fetchone()
+    stats_columns = _columns_from_cursor(stats_cursor)
+    stats = _row_to_dict(stats_row, stats_columns)
 
-        month_name = datetime(year, month, 1).strftime("%B %Y")
+    month_name = datetime(year, month, 1).strftime("%B %Y")
 
-        # Get recent transactions in this category
-        recent = conn.execute(
-            """
-            SELECT id, amount, description, date
-            FROM expenses
-            WHERE category = ? AND date >= ? AND date < ?
-            ORDER BY date DESC
-            LIMIT 5
-            """,
-            (normalized, date_start, date_end),
-        ).fetchall()
+    # Recent transactions in this category
+    recent_cursor = client.execute(
+        """
+        SELECT id, amount, description, date
+        FROM expenses
+        WHERE category = ? AND date >= ? AND date < ?
+        ORDER BY date DESC
+        LIMIT 5
+        """,
+        (normalized, date_start, date_end),
+    )
+    recent_rows = recent_cursor.fetchall()
+    recent_columns = _columns_from_cursor(recent_cursor)
 
-        recent_list = []
-        for r in recent:
-            recent_list.append(
-                {
-                    "id": r["id"],
-                    "amount": _format_inr(r["amount"]),
-                    "description": r["description"],
-                    "date": r["date"],
-                }
-            )
-
-        return json.dumps(
+    recent_list = []
+    for r in recent_rows:
+        rd = _row_to_dict(r, recent_columns)
+        recent_list.append(
             {
-                "category": normalized,
-                "month": month_name,
-                "total_spent": row["total"],
-                "total_formatted": _format_inr(row["total"]),
-                "transaction_count": row["count"],
-                "average_per_transaction": _format_inr(row["average"]),
-                "min_expense": _format_inr(row["min_expense"])
-                if row["min_expense"]
-                else None,
-                "max_expense": _format_inr(row["max_expense"])
-                if row["max_expense"]
-                else None,
-                "recent_transactions": recent_list,
-            },
-            indent=2,
+                "id": rd["id"],
+                "amount": _format_inr(rd["amount"]),
+                "description": rd["description"],
+                "date": rd["date"],
+            }
         )
-    finally:
-        conn.close()
+
+    return json.dumps(
+        {
+            "category": normalized,
+            "month": month_name,
+            "total_spent": stats["total"],
+            "total_formatted": _format_inr(stats["total"]),
+            "transaction_count": stats["count"],
+            "average_per_transaction": _format_inr(stats["average"]),
+            "min_expense": _format_inr(stats["min_expense"])
+            if stats["min_expense"]
+            else None,
+            "max_expense": _format_inr(stats["max_expense"])
+            if stats["max_expense"]
+            else None,
+            "recent_transactions": recent_list,
+        },
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -489,5 +478,5 @@ def get_budget_status_of_category(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    logger.info("Starting Expense Tracker MCP server (stdio transport)…")
+    logger.info("Starting Expense Tracker MCP server…")
     mcp.run(transport="http", host="0.0.0.0", port=8000, stateless_http=True)

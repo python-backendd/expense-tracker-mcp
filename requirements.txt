@@ -1,3 +1,0 @@
-fastmcp
-turso_serverless
-python-dotenv
