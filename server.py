@@ -13,17 +13,14 @@ Tools:
 Transport: stdio (default for Claude Desktop integration)
 Reference: https://gofastmcp.com/getting-started/installation
 """
-
-
-
 import json
 import logging
-import os
 import sqlite3
 from datetime import date, datetime
-from pathlib import Path
 
 from fastmcp import FastMCP
+
+from db import client
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -33,9 +30,7 @@ from fastmcp import FastMCP
 # only give write access to a specific scratch/data path. Allow overriding
 # where the DB lives via an env var, and default to a writable temp dir
 # rather than assuming the app directory itself is writable.
-DB_DIR = Path(os.environ.get("DB_DIR", "/tmp/expense-tracker"))
-DB_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DB_DIR / "expenses.db"
+
 
 # Logging goes to stderr so it doesn't corrupt the stdio JSON-RPC stream
 logging.basicConfig(
@@ -57,62 +52,25 @@ mcp = FastMCP(
     ),
 )
 
-# --- Workaround for a known MCP SDK bug (fastmcp/mcp, Sept 2026) ---
-# Recent SDK versions advertise a "subscriptions/listen" capability whose
-# handler never completes, which causes clients like Claude Desktop to hang
-# on connect and then fail every subsequent call with a stale/"session not
-# found" error. Removing the handler stops the server from advertising the
-# broken capability. Tracking: modelcontextprotocol/python-sdk#3493
-try:
-    mcp._lowlevel_server._request_handlers.pop("subscriptions/listen", None)
-except Exception:
-    logger.debug("subscriptions/listen handler not present; skipping workaround")
+# NOTE: We intentionally do NOT strip the "subscriptions/listen" handler here.
+# A previous version of this file popped it off _lowlevel_server._request_handlers
+# as a workaround for modelcontextprotocol/python-sdk#3493 (held-open listen
+# streams pinning serverless invocations to the platform timeout on hosts like
+# AWS Lambda). That workaround breaks modern (2026-07-28 protocol) clients such
+# as Antigravity, which open a subscriptions/listen stream before calling
+# tools/list and hard-fail the whole connection ("session not found") if no
+# handler is registered — unlike clients that treat a failed auto-open as a
+# soft error. Since this server's tool set is static and never publishes a
+# change notification, leaving the handler in place costs nothing on a normal
+# long-running host (e.g. FastMCP Cloud) and restores compatibility with
+# Antigravity and other modern-protocol clients.
 
 # ---------------------------------------------------------------------------
 # Database setup
 # ---------------------------------------------------------------------------
 
 
-def _get_db() -> sqlite3.Connection:
-    """Get a database connection with row factory enabled."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
 
-
-def _init_db() -> None:
-    """Initialize the database schema."""
-    conn = _get_db()
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                amount REAL NOT NULL,
-                description TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'uncategorized',
-                date DATE NOT NULL,
-                created_at DATE NOT NULL DEFAULT (date('now'))
-            )
-        """)
-        # Index on date for efficient monthly queries
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_expenses_date
-            ON expenses (date)
-        """)
-        # Index on category for efficient category lookups
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_expenses_category
-            ON expenses (category)
-        """)
-        conn.commit()
-        logger.info("Database initialized at %s", DB_PATH)
-    finally:
-        conn.close()
-
-
-# Initialize on import
-_init_db()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -189,7 +147,7 @@ def add_expense(
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
-    conn = _get_db()
+    conn = client
     try:
         cursor = conn.execute(
             """
@@ -237,7 +195,7 @@ def list_expenses(limit: int = 20, offset: int = 0) -> str:
     limit = min(max(1, limit), 100)
     offset = max(0, offset)
 
-    conn = _get_db()
+    conn = client
     try:
         # Get total count
         total = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
@@ -306,7 +264,7 @@ def search_expenses(keyword: str | None = None, category: str | None = None) -> 
 
     where_clause = " AND ".join(conditions)
 
-    conn = _get_db()
+    conn = client
     try:
         rows = conn.execute(
             f"""
@@ -365,7 +323,7 @@ def get_expense_summary_month(month: int | None = None, year: int | None = None)
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    conn = _get_db()
+    conn = client
     try:
         # Overall totals
         summary_row = conn.execute(
@@ -464,7 +422,7 @@ def get_budget_status_of_category(
     else:
         date_end = f"{year:04d}-{month + 1:02d}-01"
 
-    conn = _get_db()
+    conn = client
     try:
         row = conn.execute(
             """
@@ -532,5 +490,4 @@ def get_budget_status_of_category(
 
 if __name__ == "__main__":
     logger.info("Starting Expense Tracker MCP server (stdio transport)…")
-    logger.info("Database: %s", DB_PATH.resolve())
     mcp.run(transport="http", host="0.0.0.0", port=8000, stateless_http=True)
